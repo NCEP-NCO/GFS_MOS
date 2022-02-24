@@ -1,0 +1,155 @@
+#!/bin/sh
+date
+export PS4=' $SECONDS + '
+set -x
+
+####################################
+# obtain unique process id (pid) and make temp directory
+####################################
+export pid=${pid:-$$}
+export DATA=${DATA:-$DATAROOT/${job}}.${pid}
+mkdir -p $DATA
+cd $DATA
+export cycle=${cycle:-t${cyc}z}
+
+####################################
+# Specify NET Name and RUN
+#
+# RUN - RUN grib field to repack
+####################################
+export NET=gfs
+export RUN=gfsmos
+
+####################################
+# Determine Job Output Name on System
+####################################
+export outid="LL$job"
+export jobid="${outid}.o${pid}"
+export pgmout="OUTPUT.${pid}"
+
+####################################
+# SENDECF  - Flag Events on ECF
+# SENDCOM  - Copy Files From TMPDIR to $com
+# SENDDBN  - Send com files to OSO
+# SENDDBN_NTC  - Send pcom files
+####################################
+export SENDECF=${SENDECF:-YES}
+export SENDCOM=${SENDCOM:-YES}
+export SENDDBN=${SENDDBN:-YES}
+export SENDDBN_NTC=${SENDDBN_NTC:-YES}
+
+####################################
+# Specify GFS-MOS version number
+####################################
+export GFSMOS_MODEL_VERSION=${GFSMOS_MODEL_VERSION:-${gfsmos_ver}}
+export GFSMOS_CODE_VERSION=${GFSMOS_CODE_VERSION:-${mos_shared_ver}}
+
+####################################
+# Specify Execution Areas
+####################################
+export HOMEmdl=${HOMEmdl:-$NWROOT/gfsmos.${GFSMOS_MODEL_VERSION}}
+export HOMEcode=${HOMEcode:-$NWROOT/mos_shared.${GFSMOS_CODE_VERSION}}
+export EXECmdl=${EXECmdl:-$HOMEcode/exec}
+export FIXmdl=${FIXmdl:-$HOMEmdl/fix}
+export FIXcode=${FIXcode:-$HOMEcode/fix}
+export PARMmdl=${PARMmdl:-$HOMEmdl/parm}
+export PARMcode=${PARMcode:-$HOMEcode/parm}
+export SCRIPTSmdl=${SCRIPTSmdl:-$HOMEmdl/scripts}
+
+##############################
+# Run setpdy and initialize PDY variables
+##############################
+setpdy.sh
+. PDY
+
+##############################################
+# Define COM directories
+##############################################
+export COMIN=${COMIN:-$COMROOT/${NET}/${envir}/${RUN}.${PDY}}
+export COMINm1=${COMINm1:-$COMROOT/${NET}/${envir}/${RUN}.${PDYm1}}
+export COMOUT=${COMOUT:-$COMROOT/${NET}/${envir}/${RUN}.${PDY}}
+export PCOM=${PCOM:-$PCOMROOT/${RUN}}
+mkdir -m 775 -p $COMOUT $PCOM
+
+env
+
+########################################
+# EXECUTE THE SCRIPTS USING MPMD
+########################################
+
+rm -f $DATA/mpmdscript_omp
+let ntask=0
+if [[ $cyc == "00" || $cyc == "12" ]] && [[ $stnonly != "Y" ]]; then
+   complist="station gridded higridded akgridded"
+   complist2="cogridded cotstm cotsvr"
+else
+   complist="station"
+   complist2=""
+fi
+
+echo '#!/bin/bash' > $DATA/mpmdscript_omp
+for comp in $complist
+do
+   for dat in $datlist
+   do
+      mkdir -p $DATA/${comp}_${dat}
+      echo "($SCRIPTSretro/exgfsmos_${comp}_prdgen.sh.ecf ${dat} 2>&1 | sed 's/^/${comp}_${dat}:/')" >> $DATA/mpmdscript_omp
+
+      ntask=$((count+1))
+   done
+done
+
+for comp in $complist2
+do
+   mkdir -p $DATA/$comp
+   if [ "$comp" == "cogridded" ]; then 
+      echo "$SCRIPTSmdl/exgfsmos_${comp}_prdgen.sh.ecf &" >> $DATA/mpmdscript_omp
+   else
+      echo "$SCRIPTSmdl/exgfsmos_${comp}_fcst.sh.ecf &" >> $DATA/mpmdscript_omp
+   fi
+done
+echo "wait" >> $DATA/mpmdscript_omp
+
+if [ $ntask -le 24 ]; then
+   ptile=$ntask
+else
+   ptile=24
+fi
+
+chmod 755 $DATA/mpmdscript_omp
+export MP_LABELIO=YES
+export MP_STDOUTMODE=unordered
+aprun -n ${ntask} -N ${ptile} -d ${OMP_NUM_THREADS} --cc depth $DATA/mpmdscript_omp
+export err=$?; err_chk
+
+set +x
+export out_dir=${out_dir:-${COMROOT}/output/${envir}/today}
+for comp in $complist $complist2
+do
+   for dat in $datlist
+   do
+      out_file=$out_dir/gfsmos_prdgen_${comp}_${dat}_$cyc.o${pid}
+      echo "############# OUTPUT FOR GFSMOS $comp $dat#################" > $out_file
+      if [[ "$comp" == "cotstm" || "$comp" == "cotsvr" ]]; then
+         grep -E "${comp}_fcst " $LSB_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+      else
+         grep -E "${comp}_${dat}:" $LSB_OUTPUTFILE | cut -d":" -f 2- >> $out_file
+      fi
+      cat $DATA/${comp}_${dat}/$pgmout >> $out_file
+   done
+done
+set -x
+
+msg="JOB $job HAS COMPLETED NORMALLY"
+postmsg $jlogfile "$msg"
+
+if [ -e $pgmout ]; then
+   cat $pgmout
+fi
+
+if [ "$KEEPDATA" != YES ]; then
+   cd $DATAROOT
+   rm -rf $DATA
+fi
+
+date

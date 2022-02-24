@@ -1,0 +1,370 @@
+#!/bin/sh
+#######################################################################
+#  Job Name: exgfsmos_station_prdgen.sh.ecf 
+#  Purpose: To run all steps necessary to create short range GFS-based
+#           MOS station-based products.  It creates all of our text,
+#           BUFR, and GRIB1 products for the METAR, Pacific, coop, and
+#           rfc sites.
+#  Remarks: This script is kicked off when all 5 of the forecast jobs
+#           have completed (METAR, GOE, COOPMESO, TSTM, PACIFIC). 
+#
+#  HISTORY: Jun 13, 2005      - new job for Gridded MOS
+#           Feb  7, 2006      - changed text product alerts to go NTC
+#           Mar  2, 2006      - added the 40km tstm forecasts so
+#                               right now there's one run of U910
+#                               to get 40km tstm forecasts @ sites
+#                               and another to get 48km svr @ sites
+#           Jul  7, 2006      - Removed old BUFR products
+#           Mar  5, 2008      - Added steps to get 47km AK thunderstorms
+#                               set to stations and merged into text
+#                               and BUFR files
+#           Dec 10, 2009      - Changed steps to put 80km svr @ sites
+#                               as 48km tsvr is discontinued; changed
+#                               tstm GRIB1 to use 40/80km instead of
+#                               48km.
+#           Dec 03, 2012  EFE - Transitioned to WCOSS (Linux). Changed
+#                               all 'XLFUNIT_  ' env vars to 'FORT  '
+#           Feb 04, 2016  SDS - Configured for MPMD
+#######################################################################
+#
+set -x
+#PS4='station_prdgen $SECONDS +'
+#PS4='${PMI_FORK_RANK} $SECONDS ${0/\/gpfs\/hps\/nco\/ops\/nw.*\/gfs_mos.*\/scripts/} +'
+echo MDLLOG: `date` - Begin job exgfsmos_station_prdgen - RANK $ALPS_APP_PE
+
+
+set -x
+
+export PDY=$1
+export DAT="$PDY$cyc"
+
+cd $DATA/station_${PDY}
+# Set PDY for day we are running
+setpdy.sh
+. PDY
+
+echo $PDY $cyc: Date and Cycle - echo PDY and cyc
+
+#######################################################################
+#  COPY THE MDL FORECAST FILES FROM COM
+#    6/2005 - We need the METAR, COOPRFCMESO, TSVR and PACIFIC files
+#    3/2008 - Also need the 47 km AK thunderstorms
+#######################################################################
+cp $COMIN/gfs.${PDY}/mdl_gfsmos.$cycle mdl_gfsmos.$cycle
+cp $COMIN/gfs.${PDY}/mdl_gfscpmos.$cycle mdl_gfscpmos.$cycle
+cp $COMIN/gfs.${PDY}/mdl_gfstsvr80.$cycle mdl_gfstsvr80.$cycle
+cp $COMIN/gfs.${PDY}/mdl_gfstsvr40.$cycle mdl_gfstsvr40.$cycle
+cp $COMIN/gfs.${PDY}/mdl_gfstsvrak47.$cycle mdl_gfstsvrak47.$cycle
+if [ $cyc -eq '00' -o $cyc -eq '12' ]
+then
+cp $COMIN/gfs.${PDY}/mdl_pacgfsmos.$cycle mdl_pacgfsmos.$cycle
+fi
+
+#######################################################################
+#
+#    PROGRAM FCSTPOST - USED TO COMBINE TSVR & MOS FORECASTS
+#      3/2006 - THIS STEP GETS THE 40KM TSTM TO THE MOS SITES
+#               FOR 6-, 12-, AND 24-HR TSTM FORECASTS.
+#
+#######################################################################
+
+echo MDLLOG: `date` - begin job FCSTPOST - COMBINE TSVR and MOS
+export pgm=mdl_fcstpost
+. prep_step
+export FORT10="ncepdate"
+export FORT26="$FIXcode/mdl_station.lst"
+export FORT27="$FIXmdl/mdl_mos2grd_40.tbl"
+export FORT28="$FIXmdl/mdl_gfstsvr40comb.$cycle"
+export FORT29="$FIXcode/mdl_mos2000id.tbl"
+export FORT48="mdl_gfstsvr40.$cycle"
+export FORT49="mdl_gfsmos.$cycle"
+startmsg
+$EXECmdl/mdl_fcstpost < $PARMmdl/mdl_gfspostcomb.cn >> $pgmout 2>errfile
+export err=$?; err_chk
+echo MDLLOG: `date` -  FCSTPOST ended
+
+#######################################################################
+#
+#    PROGRAM FCSTPOST - USED TO COMBINE TSVR & MOS FORECASTS
+#      3/2006 - THIS STEP GETS THE 48KM SVR TO THE MOS SITES
+#               FOR 6- AND 12-HR (C/U)SVR FORECASTS.
+#     12/2009 - CHANGED TO PUT THE 80KM SVR TO THE MOS SITES
+#               FOR 6- AND 12-HR (C/U)SVR FORECASTS.
+#
+#######################################################################
+
+echo MDLLOG: `date` - begin job FCSTPOST - COMBINE TSVR and MOS
+export pgm=mdl_fcstpost
+. prep_step
+export FORT10="ncepdate"
+export FORT26="$FIXcode/mdl_station.lst"
+export FORT27="$FIXmdl/mdl_mos2grd_80.tbl"
+export FORT28="$FIXmdl/mdl_gfsposttsvraw.$cycle"
+export FORT29="$FIXcode/mdl_mos2000id.tbl"
+export FORT48="mdl_gfstsvr80.$cycle"
+export FORT49="mdl_gfsmos.$cycle"
+startmsg
+$EXECmdl/mdl_fcstpost < $PARMmdl/mdl_gfspostcomb.cn >> $pgmout 2>errfile
+export err=$?; err_chk
+echo MDLLOG: `date` -  FCSTPOST ended
+
+#######################################################################
+#
+#  PROGRAM RAINIT - INITIALIZES RANDOM ACCESS MOS FORECAST
+#                   FILE WITH STATION CALL LETTERS,
+#                   ELEVATION, LATITUDE, AND LONGITUDE
+#
+#  COPY THE RANDOM ACCESS TEMPLATE FILE FROM FIX
+#######################################################################
+cp $FIXcode/mdl_rafile_template mdl_gfsmergemos.$cycle
+
+export pgm=mdl_rainit
+. prep_step
+echo MDLLOG: `date` - begin job RAINIT - INITIALIZE MOS FORECAST FILE
+export FORT10="ncepdate"
+export FORT26="$FIXmdl/mdl_metarpacsta.lst"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT49="mdl_gfsmergemos.$cycle"
+startmsg
+$EXECmdl/mdl_rainit < $PARMcode/mdl_u351.cn >> $pgmout 2>errfile
+export err=$?; err_chk
+echo MDLLOG: `date` -  RAINIT ended
+
+#######################################################################
+#  Make a copy of the station random access file created above.  We 
+#  will then run fcstpost to assign the 47 km Alaska thunderstorms to
+#  the Alaska stations
+#######################################################################
+
+cp mdl_gfsmergemos.$cycle mdl_gfstsvrak47atsta.$cycle
+
+#######################################################################
+#    PROGRAM FCSTPOST - USED TO COMBINE TSVR & MOS FORECASTS
+#      3/2008 - THIS STEP GETS THE AK 47KM TSTM TO THE AK MOS SITES
+#               FOR 6-, 12-, AND 24-HR TSTM FORECASTS.
+#
+#######################################################################
+
+echo MDLLOG: `date` - begin job FCSTPOST - COMBINE TSVR and MOS
+export pgm=mdl_fcstpost
+. prep_step
+export FORT10="ncepdate"
+export FORT26="$FIXmdl/mdl_metarpacsta.lst"
+export FORT27="$FIXmdl/mdl_mos2grd_ak47.tbl"
+export FORT28="$FIXmdl/mdl_gfstsvrak47comb.$cycle"
+export FORT29="$FIXcode/mdl_mos2000id.tbl"
+export FORT48="mdl_gfstsvrak47.$cycle"
+export FORT49="mdl_gfstsvrak47atsta.$cycle"
+startmsg
+$EXECmdl/mdl_fcstpost < $PARMmdl/mdl_gfspostcomb.cn >> $pgmout 2>errfile
+export err=$?; err_chk
+echo MDLLOG: `date` -  FCSTPOST ended
+
+#######################################################################
+#  CODE RAMERGE
+#   COMBINE THE PACIFIC AND US SITES INTO 1 RANDOM ACCES FILE.
+#   ALSO ADD IN THE ALASKA THUNDERSTORM STATIONS.
+#    (THE 06/18Z RUNS DON'T HAVE THE PACIFIC FILE IN THEM)
+#######################################################################
+echo MDLLOG: `date` - begin job RAMERGE
+
+export pgm=mdl_ramerge
+. prep_step
+startmsg
+export FORT10="ncepdate"
+export FORT26="$FIXmdl/mdl_metarpacsta.lst"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT28="$FIXmdl/mdl_pacramerge.$cycle"
+export FORT29="$FIXcode/mdl_mos2000id.tbl"
+export FORT46="mdl_gfsmos.$cycle"
+export FORT44="mdl_gfstsvrak47atsta.$cycle"
+export FORT48="mdl_pacgfsmos.$cycle"
+export FORT49="mdl_gfsmergemos.$cycle"
+$EXECmdl/mdl_ramerge < $PARMmdl/mdl_ramergera.cn.$cycle >> $pgmout 2>errfile
+export err=$?; err_chk
+echo MDLLOG: `date` -  RAMERGE ended
+
+#######################################################################
+# COPY FILES TO COM 
+#######################################################################
+if test $SENDCOM = 'YES'
+then
+  cp mdl_gfsmos.$cycle $COMOUT/gfs.$PDY
+  cp mdl_gfsmergemos.$cycle $COMOUT/gfs.$PDY
+  cp mdl_gfstsvrak47atsta.$cycle $COMOUT/gfs.$PDY
+fi
+
+#######################################################################
+#  FIRST CREATE ALL OF OUR TEXT PRODUCTS, COPY THEM TO COM AND SEND
+#  THEM OUT
+#######################################################################
+
+#######################################################################
+# GFSMAVTX
+# SHORT-RANGE GFS MOS MESSAGE CODE
+# WITH HEADERS FOPA20, FOUS21-26, FOAK37-39 KWNO MAVXXX
+#######################################################################
+
+export pgm=mdl_gfsmavtx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT48="mdl_gfsmergemos.$cycle"
+export FORT60="mdl_gfsmav.$cycle"
+export FORT65="mdl_gfsmav.tran"
+startmsg
+$EXECmdl/mdl_gfsmavtx < $PARMmdl/mdl_gfsmavtx.dat.$cycle >> $pgmout 2>errfile
+export err=$?; err_chk
+
+#######################################################################
+# SECOND RUN OF GFSMAVTX
+# CREATE SHORT-RANGE AIR FORCE MOS MESSAGE
+# WITH HEADERS FOPA30, FOUS30, FOAK30, FOCA30 KWNO MAVFXX
+#######################################################################
+
+export pgm=mdl_gfsmavtx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT48="mdl_gfsmergemos.$cycle"
+export FORT60="mdl_gfsafmav.$cycle"
+export FORT65="mdl_gfsafmav.tran"
+startmsg
+$EXECmdl/mdl_gfsmavtx < $PARMmdl/mdl_gfsafmavtx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+#######################################################################
+# THIRD RUN OF GFSMAVTX
+# CREATE SHORT-RANGE PACIFIC MOS MESSAGE -- ONLY AT 00 & 12
+# WITH HEADER FOPA21 KWNO MAVPA1
+#######################################################################
+
+if [ $cyc -eq '00' -o $cyc -eq '12' ]
+then
+
+export pgm=mdl_gfsmavtx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT48="mdl_gfsmergemos.$cycle"
+export FORT60="mdl_gfspacmav.$cycle"
+export FORT65="mdl_gfspacmav.tran"
+startmsg
+$EXECmdl/mdl_gfsmavtx < $PARMmdl/mdl_gfspacmavtx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+fi
+
+#######################################################################
+# CREATE MARINE MOS GUIDANCE (MMG) MESSAGES
+# WITH HEADERS FQPA20, FQUS21-26, FQAK37 KWNO MMGXXX
+#######################################################################
+
+export pgm=mdl_gfsmmgtx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT48="mdl_gfsmos.$cycle"
+export FORT60="mdl_gfsmmg.$cycle"
+export FORT65="mdl_gfsmmg.tran"
+startmsg
+$EXECmdl/mdl_gfsmmgtx < $PARMmdl/mdl_gfsmmgtx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+#######################################################################
+# GENERATE CANADIAN MAX/MIN BULLETIN AT 00 AND 12Z
+# WITH HEADER FOCN20 KWNO 
+#######################################################################
+
+if [ $cyc -eq '00' -o $cyc -eq '12' ]
+then
+
+export pgm=mdl_focn20tx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXcode/mdl_station.tbl"
+export FORT48="mdl_gfsmos.$cycle"
+export FORT60="mdl_focn20.$cycle"
+export FORT65="mdl_focn20.tran"
+startmsg
+$EXECmdl/mdl_focn20tx < $PARMmdl/mdl_focn20tx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+fi
+
+#######################################################################
+# GFSMCGTX
+# SHORT-RANGE GFS MOS COOP MESSAGE CODE
+# HEADER: FOUS10 KWNO MCGUSA
+#######################################################################
+
+export pgm=mdl_gfsmcgtx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXmdl/mdl_cooprfcmnsta.tbl"
+export FORT48="mdl_gfscpmos.$cycle"
+export FORT60="mdl_gfsmcg.$cycle"
+export FORT65="mdl_gfsmcg.tran"
+startmsg
+$EXECmdl/mdl_gfsmcgtx < $PARMmdl/mdl_gfsmcgtx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+#######################################################################
+# RFCFTPTX - CREATES RFC TEXT AND TRANS FILES
+# HEADER: FOUS12 KWNO FTPXXX
+#  FOR THE 12Z CYCLE ONLY, RUN RFC TEXT MESSAGE.  AT 00Z IT RUNS IN
+#  EXGFSMOS_STATION_EXTPRDGEN.SH.SMS
+#######################################################################
+
+if test $cyc -eq '12'
+then
+
+#  copy the 00Z gfsmos random access file and   
+#  gfscpmos random access file here from /com
+
+cp $COMIN/gfs.${PDY}/mdl_gfsmos.t00z mdl_gfsmos.t00z
+cp $COMIN/gfs.${PDY}/mdl_gfscpmos.t00z mdl_gfscpmos.t00z
+
+export pgm=mdl_rfcftptx
+. prep_step
+export FORT10="ncepdate"
+export FORT27="$FIXmdl/mdl_cooprfcmnsta.tbl.shef"
+export FORT35="mdl_gfsmos.t12z"
+export FORT36="mdl_gfsmos.t00z"
+export FORT37="mdl_gfscpmos.t12z"
+export FORT38="mdl_gfscpmos.t00z"
+export FORT60="mdl_rfcftp.$cycle"
+export FORT65="mdl_rfcftp.tran"
+startmsg
+$EXECmdl/mdl_rfcftptx < $PARMmdl/mdl_rfcftptx.dat >> $pgmout 2>errfile
+export err=$?; err_chk
+
+fi
+
+#######################################################################
+# COPY FILES TO COM & SEND OUT MESSAGE
+#   NOTE:  FOCN20 and PACMAV ONLY GO OUT AT 00 AND 12Z
+#######################################################################
+
+if test $SENDCOM = 'YES'
+then
+  cp mdl_gfsmav.$cycle $COMOUT/gfs.$PDY
+  cp mdl_gfsafmav.$cycle $COMOUT/gfs.$PDY
+  cp mdl_gfsmmg.$cycle $COMOUT/gfs.$PDY
+  cp mdl_gfsmcg.$cycle $COMOUT/gfs.$PDY
+    if [ $cyc -eq '00' -o $cyc -eq '12' ]
+     then
+      cp mdl_focn20.$cycle $COMOUT/gfs.$PDY
+      cp mdl_gfspacmav.$cycle $COMOUT/gfs.$PDY
+    fi
+    if [ $cyc -eq 12 ] ; then
+     cp mdl_rfcftp.$cycle $COMOUT/gfs.$PDY
+    fi
+fi
+
+#######################################################################
+#  ARCHIVING OF FORECASTS IS DONE IN GFSMOS_STATION_EXTPRDGEN
+#######################################################################
+
+echo MDLLOG: `date` - Job exgfsmos_station_prdgen has ended.
+#######################################################################

@@ -1,0 +1,122 @@
+suite prod
+
+family primary
+
+family 00
+family gfs
+family v16.2
+family gfs
+family atmos
+family post
+task jgfs_atmos_post_f096
+endfamily
+endfamily
+endfamily
+endfamily
+endfamily
+
+family gfs_mos
+          defstatus complete
+	  edit QUEUESERV 'prod_transfer'
+          family v5.3
+            edit gfs_mos_ver 'v5.3.0'
+            edit PACKAGEHOME '/lfs/h1/ops/%ENVIR%/packages/gfs_mos.%gfs_mos_ver%'
+            family prep
+                task jgfs_mos_stn_prep
+              trigger /prod/primary/00/gfs/v16.2/gfs/atmos/post/jgfs_atmos_post_f096 == complete
+
+               edit NTASK '3'
+                edit PTILE '3'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_grd_prep
+               trigger /prod/primary/00/gfs/v16.2/gfs/atmos/post/jgfs_atmos_post_f096 == complete
+                edit NTASK '4'
+                edit PTILE '4'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_ext_stn_prep
+	      trigger /prod/primary/00/gfs/v16.2/gfs/atmos/post == complete
+                edit NTASK '2'
+                edit PTILE '2'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_ext_grd_prep
+	      trigger /prod/primary/00/gfs/v16.2/gfs/atmos/post == complete
+                edit NTASK '7'
+                edit PTILE '7'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+            endfamily
+            family forecast
+              task jgfs_mos_stn_fcst
+                trigger ../prep/jgfs_mos_stn_prep == complete
+                edit NTASK '5'
+                edit PTILE '5'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_grd_fcst
+                trigger ../prep/jgfs_mos_stn_prep == complete and ../prep/jgfs_mos_grd_prep == complete
+                edit NTASK '7'
+                edit PTILE '7'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_ext_stn_fcst
+                trigger ../prep/jgfs_mos_ext_stn_prep == complete and ../prdgen/jgfs_mos_stn_prdgen == complete
+                edit NTASK '3'
+                edit PTILE '3'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_ext_grd_fcst
+                trigger ../prep/jgfs_mos_ext_stn_prep == complete and ../prep/jgfs_mos_ext_grd_prep == complete and jgfs_mos_grd_fcst == complete
+                edit NTASK '7'
+                edit PTILE '7'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+            endfamily
+            family prdgen
+              task jgfs_mos_stn_prdgen
+                trigger ../forecast/jgfs_mos_stn_fcst == complete
+                edit NTASK '1'
+                edit PTILE '1'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_grd_prdgen
+                trigger ../forecast/jgfs_mos_grd_fcst == complete and jgfs_mos_stn_prdgen == complete
+                edit NTASK '18'
+                edit PTILE '6'
+                edit OMP_NUM_THREADS '16'
+                edit NODES '3'
+              task jgfs_mos_ext_stn_prdgen
+                trigger ../forecast/jgfs_mos_ext_stn_fcst == complete and jgfs_mos_stn_prdgen == complete
+                edit NTASK '1'
+                edit PTILE '1'
+                edit OMP_NUM_THREADS '1'
+                edit NODES '1'
+              task jgfs_mos_ext_grd_prdgen
+                trigger ../forecast/jgfs_mos_ext_grd_fcst == complete and jgfs_mos_grd_prdgen == complete and jgfs_mos_ext_stn_prdgen == complete
+                edit NTASK '17'
+                edit PTILE '6'
+                edit OMP_NUM_THREADS '16'
+                edit NODES '3'
+              task jgfs_mos_wx_prdgen
+                trigger ../prdgen/jgfs_mos_grd_prdgen == complete
+                edit NTASK '2'
+                edit PTILE '2'
+                edit OMP_NUM_THREADS '20'
+                edit NODES '1'
+              task jgfs_mos_wx_ext_prdgen
+                trigger ../prdgen/jgfs_mos_ext_grd_prdgen == complete and jgfs_mos_wx_prdgen == complete
+                edit NTASK '2'
+                edit PTILE '2'
+                edit OMP_NUM_THREADS '20'
+                edit NODES '1'
+            endfamily
+
+           endfamily
+        endfamily
+      endfamily
+endfamily
+
+endsuite     
+

@@ -1,0 +1,212 @@
+#!/bin/sh
+date
+export PS4=' $SECONDS + '
+set -x
+
+envir=${envir:?}        # Typically set to prod
+DATAROOT=${DATAROOT:?}  # Typically default to {DATAROOT:-/tmpnwprd1}
+COMROOT=${COMROOT:?}    # Typically default to -/com
+PACKAGEROOT=${PACKAGEROOT:?}    # Typically default to -/nw${envir}}
+
+####################################
+# obtain unique process id (pid) and make temp directory
+####################################
+export pid=${pid:-$$}
+export DATA=${DATA:-$DATAROOT/${job}}.${pid}
+mkdir -p $DATA
+cd $DATA
+export cycle=${cycle:-t${cyc}z}
+
+####################################
+# Specify NET Name and RUN
+#
+# RUN - RUN grib field to repack
+####################################
+export NET=gfs_mos
+export RUN=gfs_mos
+
+####################################
+# Determine Job Output Name on System
+####################################
+export outid="LL$job"
+export jobid="${outid}.o${pid}"
+export pgmout="OUTPUT.${pid}"
+
+####################################
+# SENDECF  - Flag Events on ECF
+# SENDCOM  - Copy Files From TMPDIR to $com
+# SENDDBN  - Send com files to OSO
+# SENDDBN_NTC  - Send pcom files
+####################################
+export SENDECF=${SENDECF:-YES}
+export SENDCOM=${SENDCOM:-YES}
+export SENDDBN=${SENDDBN:-YES}
+export SENDDBN_NTC=${SENDDBN_NTC:-YES}
+
+####################################
+# Specify GFS-MOS version number
+####################################
+export GFSMOS_MODEL_VERSION=${GFSMOS_MODEL_VERSION:-${gfsmos_ver}}
+export GFSMOS_CODE_VERSION=${GFSMOS_CODE_VERSION:-${mos_shared_ver}}
+
+####################################
+# Specify Execution Areas
+####################################
+export FIXgfs_mos=${FIXgfs_mos:-$HOMEgfs_mos/fix}
+export PARMgfs_mos=${PARMgfs_mos:-$HOMEgfs_mos/parm}
+export SCRIPTSgfs_mos=${SCRIPTSgfs_mos:-$HOMEgfs_mos/scripts}
+
+#export HOMEcode=${HOMEcode:-$PACKAGEROOT/mos_shared.${GFSMOS_CODE_VERSION}}
+#export EXECcode=${EXECcode:-$HOMEcode/exec}
+#export FIXcode=${FIXcode:-$HOMEcode/fix}
+#export PARMcode=${PARMcode:-$HOMEcode/parm}
+
+##############################
+# Run setpdy and initialize PDY variables
+##############################
+setpdy.sh
+. ./PDY
+
+##############################################
+# Define COM directories
+##############################################
+export COMIN=${COMIN:-$(compath.py ${envir}/com/$RUN/${gfs_mos_ver}/$RUN.${PDY})}
+export COMINm1=${COMINm1:-$(compath.py ${envir}/com/$RUN/${gfs_mos_ver}/$RUN.${PDYm1})}
+export COMOUT=${COMOUT:-$(compath.py -o ${RUN}/${gfs_mos_ver}/${RUN}.${PDY})}
+export COMOUTwmo=${COMOUTwmo:-$COMOUT/wmo}
+mkdir -m 775 -p $COMOUT $COMOUTwmo
+
+env
+
+########################################
+# EXECUTE THE SCRIPTS USING MPMD
+########################################
+rm -f $DATA/mpmdscript_omp
+if [[ $cyc == "00" || $cyc == "12" ]] && [[ "$stnonly" != "Y" ]]; then
+   complist="higridded akgridded prgridded"
+   complist2="cogridded cotstm cotsvr"
+else
+   complist=""
+   complist2=""
+fi
+
+#echo '#!/bin/sh' > $DATA/mpmdscript_omp
+for comp in $complist
+do
+   mkdir -p $DATA/$comp
+   if [ "$comp" == "akgridded" ]; then
+      #echo "$SCRIPTSmdl/exgfsmos_${comp}_prdgen.sh &" >> $DATA/mpmdscript_omp
+      for akElem in temp wind prcp skyc tstm vis cig; do
+         mkdir $DATA/${comp}/${akElem}
+         echo "$SCRIPTSgfs_mos/exgfsmos_${comp}_prdgen.${akElem}.sh" >> $DATA/mpmdscript_omp
+      done
+   else
+      echo "$SCRIPTSgfs_mos/exgfsmos_${comp}_prdgen.sh" >> $DATA/mpmdscript_omp
+   fi
+done
+
+for comp in $complist2
+do
+   mkdir -p $DATA/$comp
+   if [ "$comp" == "cogridded" ]; then 
+      #echo "$SCRIPTSmdl/exgfsmos_${comp}_prdgen.sh &" >> $DATA/mpmdscript_omp
+      for coElem in temp wind prcp skyc tstm vis cig; do
+         mkdir $DATA/${comp}/${coElem}
+         echo "$SCRIPTSgfs_mos/exgfsmos_${comp}_prdgen.${coElem}.sh" >> $DATA/mpmdscript_omp
+      done
+   else
+      echo "$SCRIPTSgfs_mos/exgfsmos_${comp}_fcst.sh" >> $DATA/mpmdscript_omp
+   fi
+done
+#echo "wait" >> $DATA/mpmdscript_omp
+
+chmod 755 $DATA/mpmdscript_omp
+export MP_PGMMODEL=mpmd
+export MP_CMDFILE=$DATA/mpmdscript_omp
+export MP_LABELIO=YES
+export MP_STDOUTMODE=unordered
+
+mpiexec -n $NTASK -ppn $PTILE --cpu-bind core --depth $OMP_NUM_THREADS cfp $DATA/mpmdscript_omp
+#mpiexec -n 18 -ppn 18 --cpu-bind core --depth 7 cfp  $DATA/mpmdscript_omp    
+#mpiexec -n 18 -ppn 18 --cpu-bind core --depth 4 cfp $DATA/mpmdscript_omp
+export err=$?; err_chk
+
+set +x
+i=0
+#export out_dir=${out_dir:-${OPSROOT}/${envir}/output/${PDY}}
+
+#pbs_id=`echo $PBS_JOBID | awk -F. '{print $1}'`
+#export PBS_OUTPUTFILE=${PBS_OUTPUTFILE:-$out_dir/$job.o$pbs_id}
+export PBS_OUTPUTFILE=$PBS_O_WORKDIR/$job.o$pid
+
+for comp in $complist $complist2
+do
+   out_file=$DATA/gfsmos_prdgen_${comp}_$cyc.o${pid}
+   echo "############# OUTPUT FOR GFSMOS $comp #################" > $out_file
+   if [[ "$comp" == "cotstm" || "$comp" == "cotsvr" ]]; then
+      grep -E "${comp}_fcst " $PBS_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+   elif [[ "$comp" == "cogridded" ]]; then
+      for coElem in temp wind prcp skyc tstm cig vis; do
+         echo "############# OUTPUT FOR GFSMOS $comp $coElem #################" >> $out_file
+         grep -E "${comp}_prdgen.$coElem " $PBS_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+         cat $DATA/$comp/$coElem/$pgmout >> $out_file
+      done
+   elif [[ "$comp" == "akgridded" ]]; then
+      for akElem in temp wind prcp skyc tstm cig vis; do
+         echo "############# OUTPUT FOR GFSMOS $comp $akElem #################" >> $out_file
+         grep -E "${comp}_prdgen.$akElem " $PBS_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+         cat $DATA/$comp/$akElem/$pgmout >> $out_file
+      done
+   else
+      grep -E "${comp}_prdgen " $PBS_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+   fi
+   if [[ "$comp" != "cogridded" && "$comp" != "akgridded" ]]; then
+      cat $DATA/$comp/$pgmout >> $out_file
+   fi
+   let i=i+1 
+done
+set -x
+
+if [[ $cyc == "00" || $cyc == "12" ]] && [[ $stnonly != "Y" ]]; then
+   #echo '#!/bin/bash' > $DATA/mpmdscript
+   complist3="cogridded akgridded"
+   for comp in $complist3
+   do
+      mkdir $DATA/$comp/merge
+      echo "$SCRIPTSgfs_mos/exgfsmos_${comp}_prdgen.merge.sh" >> $DATA/mpmdscript
+   done
+
+   chmod 755 $DATA/mpmdscript
+   export MP_PGMMODEL=mpmd
+   export MP_CMDFILE=$DATA/mpmdscript
+   export MP_LABELIO=YES
+   export MP_STDOUTMODE=unordered
+   export NTASK=2
+   export PTILE=2
+   mpiexec --cpu-bind core --configfile $DATA/mpmdscript
+   export err=$?; err_chk
+fi
+
+set +x
+for comp in $complist3
+do
+   out_file=$DATA/gfsmos_prdgen_${comp}_merge_$cyc.o${pid}
+   echo "############# OUTPUT FOR GFSMOS $comp MERGE #################" > $out_file
+   grep -E "${comp}_prdgen.merge " $PBS_OUTPUTFILE | cut -d" " -f 2- >> $out_file
+   cat $DATA/$comp/merge/$pgmout >> $out_file
+done
+set -x
+
+msg="JOB $job HAS COMPLETED NORMALLY"
+postmsg "$msg"
+
+if [ -e $pgmout ]; then
+   cat $pgmout
+fi
+
+if [ "$KEEPDATA" != YES ]; then
+   cd $DATAROOT
+   rm -rf $DATA
+fi
+
+date
